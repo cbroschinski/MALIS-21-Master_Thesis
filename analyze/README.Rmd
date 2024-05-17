@@ -1,0 +1,765 @@
+
+```{r, echo = FALSE, warning = TRUE}
+
+knitr::opts_knit$set(base.url = "/")
+knitr::opts_chunk$set(
+  comment = "#>",
+  collapse = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  echo = FALSE,
+  fig.width = 9,
+  fig.height = 6
+)
+options(scipen = 999, digits = 2)
+
+
+```
+
+```{r}
+library(tidyverse)
+library(ggrepel)
+```
+
+```{r, echo=FALSE, cache = FALSE}
+corpus_stats <- readr::read_csv("corpus_stats.csv")
+language_stats <- readr::read_csv("language_stats.csv")
+
+language_stats_all <- language_stats %>% filter(detection == "all")
+language_stats_reliable <- language_stats %>% filter(detection == "reliable")
+
+num_per_records_stats <- readr::read_csv("description_num_per_record_stats.csv")
+desc_length_stats <- readr::read_csv("description_length_stats.csv")
+
+processing_stats <- readr::read_csv("processing_stats.csv")
+
+num_all_docs = sum(processing_stats$count)
+
+de_ddc <- readr::read_tsv("de_ddc.tsv")
+
+de_ddc <- de_ddc %>%
+  filter(nchar(ddc_class) == 3)
+
+```
+
+## 0. Vorbemerkung
+
+Dieses README ist als dynamischer Report konzipiert. Bis auf wenige Ausnahmen entstammen alle Werte, Tabellen und Diagramme in der Masterarbeit diesem Dokument. Die Inhalte wurden unter Verwendung der Statisik-Dateien (erstellt durch summarize_stats.py) aus einer R-Markdown-Vorlage mittels [knitr](https://github.com/yihui/knitr) erstellt. Die Daten der Masterarbeit können somit repliziert werden, wenn der ursprünglich verwendete BASE-Dump
+erneut als Grundlage der Toolchain verwendet wird. Der diesem Repository beiliegende minimale Dump dient zu Demonstrationszwecken und generiert daher andere Egebnisse, verdeutlicht aber das Prinzip.
+
+## 1. Ausgangslage
+
+Der verwendete BASE-Dump besteht aus insgesamt `r format(num_all_docs, big.mark = ".", decimal.mark=",")` Records.
+
+## 2. DC-Feld "description"
+
+### Vorkommen im BASE-Dump (Tabelle 1)
+
+```{r, echo=FALSE}
+
+knitr::kable(num_per_records_stats, col.names = c('Vorkommen des Feldes "description"', "Anzahl Records"), format.args = list(big.mark = "."))
+
+description_records <- num_per_records_stats %>% filter(num_per_record > 0) %>% select(count)
+
+```
+
+### Längenbereiche 1-100 (Tabelle 3)
+
+```{r, echo=FALSE}
+
+sorted_descs <- desc_length_stats %>% filter(length_bin_center > 0) %>% arrange(length_bin_center) %>% select(length_bin, count)
+
+shortest <- head(sorted_descs, n = 10)
+longest <- tail(sorted_descs, n = 5)
+
+knitr::kable(shortest, col.names = c("Längenbereich", "Anzahl Records"), format.args = list(big.mark = "."))
+```
+
+### Histogrammverteilung der Längenbereiche (Abbildung 6):
+
+```{r, echo=FALSE}
+
+desc_length_stats_filtered <- desc_length_stats %>% filter(length_bin_center > 0 & length_bin_center < 5000)
+
+plot <- ggplot(data = desc_length_stats_filtered, aes(x = length_bin_center, y = count)) +
+        geom_area() + 
+        xlab('Element description, Länge des Feldinhalts') + 
+        ylab("Vorkommen im BASE-Dump") +
+        scale_x_continuous(labels = function(x) format(x, big.mark = ".")) +
+        scale_y_continuous(labels = function(x) format(x, big.mark = ".")) 
+ggsave(plot, path = "figure/", filename = "desc_length_distribution.png", width=9, height=5.0625, units="in", device = "png")
+```
+
+![](figure/desc_length_distribution.png)
+
+### Längenbereiche gesamt (Tabelle 2)
+
+```{r, echo=FALSE}
+desc_length_bins <- desc_length_stats %>%
+  filter(length_bin_center > 0) %>%
+  mutate(bin_class = ifelse(length_bin_center < 2500, length_bin_center - (length_bin_center %% 100) + 100, ifelse(length_bin_center < 10000, 2501, 10001))) %>%
+  group_by(bin_class) %>%
+  summarize(bin_size = sum(count)) %>%
+  mutate(bin_pct = bin_size / sum(bin_size) * 100) %>%
+  arrange(bin_class) %>%
+  mutate(bin_as_str = ifelse(bin_class == 100, "1 - 100", ifelse(bin_class <= 2500, paste(bin_class - 99, " - ", bin_class, sep = ""), ifelse(bin_class == 2501, "2501 - 10000", "> 10000")))) %>%
+  select(bin_as_str, bin_size, bin_pct)
+
+knitr::kable(desc_length_bins, col.names = c("Längenbereich", "Anzahl Records", "Anteil (%)"), format.args = list(big.mark = "."))
+
+```
+
+## 3. Sprachanalyse
+
+```{r, echo=FALSE}
+
+language_stats_min_length <- language_stats %>% 
+  filter(min_length == "desc_min_length") %>%
+  filter(detection == "reliable")
+
+ls_types <- language_stats_min_length %>% 
+    mutate(type = case_when(lang == "detection_failure" ~ "Erkennung fehlgeschlagen",
+                            lang == "confidence_too_low" ~ "Konfidenz zu niedrig",
+                            lang == "unreliable" ~ "Status unreliable",
+                            TRUE ~ "Sprache erkannt"))
+
+ls_grouped <- ls_types %>%
+    group_by(type) %>%
+    summarize(total = sum(count)) %>%
+    arrange(total)
+```
+
+Die Auswertung berücksichtigt nur Records mit ausreichender "description"-Länge, ausgewertet werden daher `r format(sum(ls_grouped$total), big.mark = ".", decimal.mark=",")` Records.
+
+### polyglot-Ergebnisse (Tabelle 4)
+
+```{r, echo=FALSE}
+knitr::kable(ls_grouped, col.names = c("Kategorie", "Anzahl"), format.args = list(big.mark = "."))
+```
+
+### Erkannten Sprachen (Tabelle 5):
+
+```{r, echo=FALSE}
+
+languages <- ls_types %>%
+  filter(type == "Sprache erkannt") %>%
+  mutate(lang = case_when(count < as.integer(sum(count) / 200) ~ "Other Languages",
+                            TRUE ~ lang)) %>%
+  group_by(lang) %>%
+  summarize(count = sum(count)) %>%
+  mutate(display_lang = round(count*100/as.integer(sum(count)), 2)) %>%
+  arrange(desc(count))
+  
+knitr::kable(languages, col.names = c("Sprache", "Anzahl", "Anteil (in %)"), format.args = list(big.mark = "."))
+
+```
+
+## 4. DDC-Klassen in den Ausgangsdaten
+
+### Anzahl DDC-Klassen pro Dokument (Tabelle 6)
+
+```{r, echo=FALSE}
+
+classcodes <- readr::read_csv("classcodes_stats.csv")
+
+cc_multi <- classcodes %>% 
+  rowwise() %>% 
+  mutate(num_codes = length(str_split(classcodes, ":")[[1]])) %>%
+  group_by(num_codes) %>% 
+  summarize(count = sum(count)) %>%
+  mutate(num_codes = as.character(num_codes))
+  
+num_ddc_docs <- sum(cc_multi$count)
+
+cc_multi_with_summary <- bind_rows(cc_multi, data.frame(num_codes = "Records mit DDC-Information aus base_dc:classcode", count = num_ddc_docs))
+
+knitr::kable(cc_multi_with_summary, col.names = c("DDC-Klassen pro Record", "Anzahl Records"), format.args = list(big.mark = ".", decimal.mark = "."))
+
+```
+
+### DDC-Klassen bei ausschließlicher Betrachtung von "subject" (Tabelle 7)
+
+```{r, echo=FALSE}
+
+subject_classcodes <- readr::read_csv("standalone_subject_classcodes_stats.csv")
+
+subject_cc_multi <- subject_classcodes %>% 
+  rowwise() %>% 
+  mutate(num_codes = length(str_split(standalone_subject_classcodes, ":")[[1]])) %>%
+  group_by(num_codes) %>% 
+  summarize(count = sum(count)) %>%
+  mutate(num_codes = as.character(num_codes))
+  
+num_subject_cc_docs <- sum(subject_cc_multi$count)
+
+subject_cc_multi_with_summary <- bind_rows(subject_cc_multi, data.frame(num_codes = "Records mit DDC-Information aus dc:subject", count = num_subject_cc_docs))
+
+knitr::kable(subject_cc_multi_with_summary, col.names = c("DDC-Klassen pro Record", "Anzahl Records"), format.args = list(big.mark = ".", decimal.mark = ","))
+
+```
+
+### Kombination beider DDC-Quellen (Tabelle 8)
+
+```{r, echo=FALSE}
+
+combined_classcodes <- readr::read_csv("combined_classcodes_stats.csv")
+
+combined_cc_multi <- combined_classcodes %>% 
+  rowwise() %>% 
+  mutate(num_codes = length(str_split(combined_classcodes, ":")[[1]])) %>%
+  group_by(num_codes) %>% 
+  summarize(count = sum(count)) %>%
+  mutate(num_codes = as.character(num_codes))
+  
+num_combined_docs <- sum(combined_cc_multi$count)
+
+combined_cc_multi_with_classcount <- combined_cc_multi %>%
+  mutate(class_count = as.integer(num_codes) * count)
+
+num_combined_notations <- sum(combined_cc_multi_with_classcount$class_count)
+
+combined_cc_multi_with_summary <- bind_rows(combined_cc_multi, data.frame(num_codes = "Records mit DDC-Information Gesamt", count = num_combined_docs))
+
+knitr::kable(combined_cc_multi_with_summary, col.names = c("DDC-Klassen pro Record", "Anzahl Records"), format.args = list(big.mark = "."))
+
+```
+
+## 5. Klassenverteilung in den Ausgangsdaten
+
+```{r, echo=FALSE}
+
+classcodes_dist <- combined_classcodes %>% 
+  rowwise() %>% 
+  mutate(str_codes = list(str_split(combined_classcodes, ":")[[1]])) %>%
+  mutate(single_class = ifelse(length(str_codes) == 1, as.integer(str_codes), NA)) %>%
+  filter(!is.na(single_class)) %>%
+  mutate(dewey_xx0 = as.character(single_class - single_class %% 10)) %>%
+  mutate(dewey_100 = as.character(single_class - single_class %% 100)) %>%
+  mutate(dewey_100 = if_else(dewey_100 == '0', '000', dewey_100)) %>%
+  mutate(dewey_10 = as.character(as.integer(dewey_xx0) - as.integer(dewey_100))) %>%
+  mutate(dewey_10 = if_else(dewey_10 == '0', '00', dewey_10)) %>%
+  left_join(de_ddc, by=join_by(dewey_100 == ddc_class)) %>%
+  mutate(full_name = paste(dewey_100, " ", classname))
+  
+plot <- ggplot(data = classcodes_dist, aes(x = full_name, y = count, fill=factor(dewey_10))) +
+        geom_col(position = position_stack(reverse = TRUE)) + 
+        xlab('DDC-Hauptklasse') + 
+        ylab("Anzahl Dokumente mit einzelner Klasse") +
+        guides(fill = guide_legend(title = "Unterklasse\n (Zehnerstelle)")) +
+        coord_flip()
+ggsave(plot, path = "figure/", filename = "distribution_records_with_one_class.png", width=9, height=5.0625, units="in", device = "png")
+
+```
+
+### Klassenverteilung für Records mit nur einer Klasse (Abbildung 7)
+
+![](figure/distribution_records_with_one_class.png)
+
+```{r, echo=FALSE}
+combined_classcodes_single_class_stats <- readr::read_csv("combined_classcodes_single_class_stats.csv")
+
+agg_class_count <- combined_classcodes_single_class_stats %>%
+  rowwise() %>%
+  mutate(class = as.integer(combined_classcodes)) %>%
+  mutate(dewey_xx0 = as.character(class - class %% 10)) %>%
+  mutate(dewey_xx0 = if_else(nchar(dewey_xx0) == 1, paste0('00', dewey_xx0), if_else(nchar(dewey_xx0) == 2, paste0('0', dewey_xx0), dewey_xx0))) %>%
+  mutate(dewey_100 = as.character(class - class %% 100)) %>%
+  mutate(dewey_100 = if_else(dewey_100 == '0', '000', dewey_100)) %>%
+  mutate(dewey_10 = as.character(as.integer(dewey_xx0) - as.integer(dewey_100))) %>%
+  mutate(dewey_10 = if_else(dewey_10 == '0', '00', dewey_10)) %>%
+  left_join(de_ddc, by=join_by(dewey_100 == ddc_class)) %>%
+  mutate(full_name = paste(dewey_100, " ", classname))
+  
+plot <- ggplot(data = agg_class_count, aes(x = full_name, y = count, fill=factor(dewey_10))) +
+  geom_col(position = position_stack(reverse = TRUE)) + 
+  xlab('DDC-Hauptklasse') + 
+  ylab("Vorkommen der Klasse im Datenbestand") +
+  guides(fill = guide_legend(title = "Unterklasse\n (Zehnerstelle)")) +
+  coord_flip()
+ggsave(plot, path = "figure/", filename = "distribution_class_over_all_records.png", width=9, height=5.0625, units="in", device = "png")
+  
+```
+
+### Klassenverteilung, direkt gezählte Klassenvorkommen (Abbildung 8) 
+
+![](figure/distribution_class_over_all_records.png)
+
+### Histogramm der Klassenvorkommen (Abbildung 9)
+
+```{r, echo=FALSE}
+
+classcodes_count <- combined_classcodes_single_class_stats %>%
+  mutate(class = as.integer(combined_classcodes))
+  
+plot <- ggplot(data = classcodes_count, aes(x = class, y = count)) +
+        geom_area() + 
+        xlab('DDC-Klasse') + 
+        ylab("Vorkommen im Datenbestand")
+ggsave(plot, path = "figure/", filename = "single_class_count_distribution.png", width=9, height=5.0625, units="in", device = "png")
+  
+```
+
+![](figure/single_class_count_distribution.png)
+
+### Einzelklassen mit mehr als 100.000 Vorkommen (Tabelle 9)
+
+```{r, echo=FALSE}
+
+ddc_existing_classes <- de_ddc %>%
+  filter(classname != "[Unbesetzt]")
+
+classcodes_sorted <- combined_classcodes_single_class_stats %>%
+  arrange(desc(count)) %>%
+  left_join(ddc_existing_classes, by=join_by(combined_classcodes == ddc_class)) %>%
+  mutate(full_name = paste(combined_classcodes, classname)) %>%
+  select(full_name, count) %>%
+  filter(count > 100000)
+  
+knitr::kable(classcodes_sorted, col.names = c("DDC-Klasse", "Anzahl Dokumente"), format.args = list(big.mark = "."))
+  
+```
+
+### Dokumente pro Klasse (Tabelle 10)
+
+```{r, echo=FALSE}
+
+ddc_existing_classes <- de_ddc %>%
+  filter(classname != "[Unbesetzt]")
+
+classcodes_occurence_bins <- combined_classcodes_single_class_stats %>%
+  right_join(ddc_existing_classes, by=join_by(combined_classcodes == ddc_class)) %>%
+  mutate(full_name = paste(combined_classcodes, classname)) %>%
+  mutate(count = if_else(is.na(count), 0, count)) %>%
+  mutate(bin_class = if_else(count == 0, 0, if_else(count < 1000, count - (count %% 100) + 100, 1001))) %>%
+  mutate(bin_as_str = if_else(bin_class == 0, "0", if_else(bin_class == 100, "1 - 100", if_else(bin_class <= 1000, paste(bin_class - 99, " - ", bin_class, sep = ""), "> 1000")))) %>%
+  arrange(desc(bin_class)) %>%
+  group_by(bin_as_str) %>%
+  summarize(bin_size = n())
+  
+knitr::kable(classcodes_occurence_bins, col.names = c("Dokumente pro Klasse", "Anzahl Klassen"), format.args = list(big.mark = "."))
+  
+```
+
+## 6. Korpusgenerierung
+
+### Filterergebnisse Rohkorpus (Tabelle 11)
+
+```{r}
+processing_stats <- readr::read_csv("processing_stats.csv")
+
+ps_annotations <- tribble(
+  ~processing_result, ~annotation,
+  "min_length", "Inhalt von `description` zu kurz",
+  "no_classcodes", "Keine DDC-Informationen im Record",
+  "lang_detection_failure", "Spracherkennung fehlgeschlagen",
+  "lang_detection_unreliable", "Spracherkenner meldet Status `unreliable`",
+  "lang_min_confidence", "Konfidenz der Spracherkennung zu niedrig",
+  "other_lang", "Andere erkannte Sprache als Deutsch oder Englisch",
+  "eligible", "Alle Tests bestanden, Aufnahme in Korpus"
+)
+
+processing_stats_annotated <- processing_stats %>%
+  inner_join(ps_annotations) %>%
+  select(annotation, count)
+  
+
+knitr::kable(processing_stats_annotated, col.names = c("Testergebnis", "Anzahl Records"), format.args = list(big.mark = ".", decimal.mark=","))
+
+```
+
+### Größe der Rohkorpora (Tabelle 12)
+
+```{r}
+corpus_stats <- readr::read_csv("corpus_stats.csv")
+
+corpus_annotations <- tribble(
+  ~lang, ~annotation,
+  "de", "Deutsch",
+  "en", "Englisch"
+)
+
+corpus_stats_per_lang <- corpus_stats %>%
+  group_by(lang) %>%
+  summarize(count = n()) %>%
+  inner_join(corpus_annotations) %>%
+  select(annotation, count)
+
+knitr::kable(corpus_stats_per_lang, col.names = c("Sprache", "Größe des Rohkorpus"), format.args = list(big.mark = ".", decimal.mark=","))
+
+```
+
+
+
+```{r, echo=FALSE}
+
+corpus_stats_single_class <- readr::read_csv("corpus_single_class_stats.csv")
+
+corpus_agg_class_count <- corpus_stats_single_class %>%
+  rowwise() %>%
+  mutate(class = as.integer(ddc_class)) %>%
+  mutate(dewey_xx0 = as.character(class - class %% 10)) %>%
+  mutate(dewey_xx0 = if_else(nchar(dewey_xx0) == 1, paste0('00', dewey_xx0), if_else(nchar(dewey_xx0) == 2, paste0('0', dewey_xx0), dewey_xx0))) %>%
+  mutate(dewey_100 = as.character(class - class %% 100)) %>%
+  mutate(dewey_100 = if_else(dewey_100 == '0', '000', dewey_100)) %>%
+  mutate(dewey_10 = as.character(as.integer(dewey_xx0) - as.integer(dewey_100))) %>%
+  mutate(dewey_10 = if_else(dewey_10 == '0', '00', dewey_10)) %>%
+  left_join(de_ddc, by=join_by(dewey_100 == ddc_class)) %>%
+  mutate(full_name = paste(dewey_100, " ", classname))
+
+corpus_stats_agg_de <- corpus_agg_class_count %>%
+  filter(lang == "de")
+
+corpus_stats_agg_en <- corpus_agg_class_count %>%
+  filter(lang == "en")
+
+plot <- ggplot(data = corpus_stats_agg_de, aes(x = full_name, y = count, fill=factor(dewey_10))) +
+  geom_col(position = position_stack(reverse = TRUE)) + 
+  xlab('DDC-Hauptklasse') + 
+  ylim(0, 210000) +
+  ylab("Vorkommen der Klasse im deutschsprachigen Rohkorpus") +
+  guides(fill = guide_legend(title = "Unterklasse\n (Zehnerstelle)")) +
+  coord_flip()
+ggsave(plot, path = "figure/", filename = "distribution_class_over_raw_corpus_de.png", width=9, height=5.0625, units="in", device = "png")
+
+plot <- ggplot(data = corpus_stats_agg_en, aes(x = full_name, y = count, fill=factor(dewey_10))) +
+  geom_col(position = position_stack(reverse = TRUE)) + 
+  xlab('DDC-Hauptklasse') + 
+  ylim(0, 210000) +
+  ylab("Vorkommen der Klasse im englischsprachigen Rohkorpus") +
+  guides(fill = guide_legend(title = "Unterklasse\n (Zehnerstelle)")) +
+  coord_flip()
+ggsave(plot, path = "figure/", filename = "distribution_class_over_raw_corpus_en.png", width=9, height=5.0625, units="in", device = "png")
+  
+```
+
+### Klassenverteilung deutschsprachiger Rohkorpus (Abbildung 10)
+
+![](figure/distribution_class_over_raw_corpus_en.png)
+
+### Klassenverteilung englischsprachiger Rohkorpus (Abbildung 11)
+
+![](figure/distribution_class_over_raw_corpus_de.png)
+
+
+## Trainierte Annif-Klassifikatoren
+
+Hinweis: Die Daten für die folgenden Plots werden nicht dynamisch generiert, sie entstammen den händisch zusammengestellten Tabellen im Unterordner "annif_optimize". Sie entsprechen somit den Abbildungen in der Masterarbeit.
+
+```{r, echo=FALSE}
+
+optimize_stats <- readr::read_csv("annif_optimize/optimization_results.csv")
+
+tfidf <- optimize_stats %>%
+  filter(project %in% c("de-tfidf", "en-tfidf"))
+
+plot <- ggplot(data = tfidf, aes(x = precision, y = recall, label = threshold, color = project)) +
+  geom_point(size = 2) +
+  geom_label_repel(aes(label = ifelse((threshold*100) %% 10 == 0, threshold, '')), force = 20, box.padding = 0.15, show.legend = FALSE, size = 4) +
+  scale_colour_manual(name = "Klassifikator",
+                      values = c("blue", "red")) +
+  xlab('Precision') + 
+  ylab("Recall") +
+  xlim(0, 1.0) +
+  ylim(0, 1.0)
+ggsave(plot, path = "figure/", filename = "tfidf.png", width=9, height=5.0625, units="in", device = "png")
+
+omikuji <- optimize_stats %>%
+  filter(project %in% c("de-omikuji", "en-omikuji"))
+
+plot <- ggplot(data = omikuji, aes(x = precision, y = recall, label = threshold, color = project)) +
+  geom_point(size = 2) +
+  geom_label_repel(aes(label = ifelse((threshold*100) %% 10 == 0, threshold, '')), force = 20, box.padding = 0.15, show.legend = FALSE, size = 4) +
+  scale_colour_manual(name = "Klassifikator",
+                      values = c("blue", "red")) +
+  xlab('Precision') + 
+  ylab("Recall") +
+  xlim(0, 1.0) +
+  ylim(0, 1.0)
+ggsave(plot, path = "figure/", filename = "omikuji.png", width=9, height=5.0625, units="in", device = "png")
+
+fasttext <- optimize_stats %>%
+  filter(project %in% c("de-fasttext", "en-fasttext"))
+
+plot <- ggplot(data = fasttext, aes(x = precision, y = recall, label = threshold, color = project)) +
+  geom_point(size = 2) +
+  geom_label_repel(aes(label = ifelse((threshold*100) %% 10 == 0, threshold, '')), force = 20, box.padding = 0.15, show.legend = FALSE, size = 4) +
+  scale_colour_manual(name = "Klassifikator",
+                      values = c("blue", "red")) +
+  xlab('Precision') + 
+  ylab("Recall") +
+  xlim(0, 1.0) +
+  ylim(0, 1.0)
+ggsave(plot, path = "figure/", filename = "fasttext.png", width=9, height=5.0625, units="in", device = "png")
+
+nn_ensemble <- optimize_stats %>%
+  filter(project %in% c("de-nn_ensemble", "en-nn_ensemble"))
+
+plot <- ggplot(data = nn_ensemble, aes(x = precision, y = recall, label = threshold, color = project)) +
+  geom_point(size = 2) +
+  geom_label_repel(aes(label = ifelse((threshold*100) %% 10 == 0, threshold, '')), force = 20, box.padding = 0.15, show.legend = FALSE, size = 4) +
+  scale_colour_manual(name = "Klassifikator",
+                      values = c("blue", "red")) +
+  xlab('Precision') + 
+  ylab("Recall") +
+  xlim(0, 1.0) +
+  ylim(0, 1.0)
+ggsave(plot, path = "figure/", filename = "nn_ensemble.png", width=9, height=5.0625, units="in", device = "png")
+
+```
+
+### TF-IDF (Abbildung 12)
+![](figure/tfidf.png)
+### Omikuji (Abbildung 13)
+![](figure/omikuji.png)
+### FastText (Abbildung 14)
+![](figure/fasttext.png)
+### nn_ensemble (Abbildung 15)
+![](figure/nn_ensemble.png)
+
+
+```{r, echo=FALSE}
+
+omikuji_stats <- readr::read_csv("annif_optimize/de-omikuji_full_eval.csv")
+
+omikuji_tidy <- omikuji_stats %>%
+  pivot_longer(cols = contains("-"), names_to = c("metric", "aggregation"), names_sep = "-") %>%
+  select(threshold, metric, aggregation, value) %>%
+  pivot_wider(names_from = metric, values_from = value)
+
+ot_micro <- omikuji_tidy %>% filter(aggregation == "microavg")
+ot_micro <- ot_micro %>% mutate(max_f1 = ifelse(`F1 score` == max(ot_micro$`F1 score`), TRUE, FALSE))
+ot_davg <- omikuji_tidy %>% filter(aggregation == "doc avg")
+ot_davg <- ot_davg %>% mutate(max_f1 = ifelse(`F1 score` == max(ot_davg$`F1 score`), TRUE, FALSE))
+ot_savg <- omikuji_tidy %>% filter(aggregation == "subj avg")
+ot_savg <- ot_savg %>% mutate(max_f1 = ifelse(`F1 score` == max(ot_savg$`F1 score`), TRUE, FALSE))
+ot_wsavg <- omikuji_tidy %>% filter(aggregation == "weighted subj avg")
+ot_wsavg <- ot_wsavg %>% mutate(max_f1 = ifelse(`F1 score` == max(ot_wsavg$`F1 score`), TRUE, FALSE))
+
+omikuji_tidy <- rbind(ot_micro, ot_davg, ot_savg, ot_wsavg)
+  
+
+plot <- ggplot(data = omikuji_tidy, aes(x = Precision, y = Recall, label = threshold, color = aggregation)) +
+  geom_point(size = 2.5, color = "black") +
+  geom_point(size = 2) +
+  geom_point(data = filter(omikuji_tidy, max_f1 == TRUE), size = 4.5, shape = 17, color = "black", show.legend = FALSE) +
+  geom_point(data = filter(omikuji_tidy, max_f1 == TRUE), size = 4, shape = 17, show.legend = FALSE) +
+  geom_label_repel(aes(label = ifelse((threshold < 0.05 | threshold > 0.9 | max_f1 == TRUE), threshold, '')), force = 20, box.padding = 0.15, show.legend = FALSE, size = 4) +
+  scale_colour_manual(name = "Aggregationsmethode",
+                      values = c("blue", "red", "green", "magenta")) +
+  xlab('Precision') + 
+  ylab("Recall") +
+  xlim(0, 1.0) +
+  ylim(0, 1.0)
+ggsave(plot, path = "figure/", filename = "aggregation_comp.png", width=9, height=5.0625, units="in", device = "png")
+
+```
+
+### Vergleich unterschiedlicher Aggregationsmetriken (Abbildung 16)
+
+![](figure/aggregation_comp.png)
+
+## 6. Evaluation und Vergleich baseclf
+
+### Durch baseclf zugewiesene Klassen (Tabelle 16)
+
+```{r, echo=FALSE}
+
+autoclasscodes <- readr::read_csv("auto_classcodes_stats.csv")
+
+autocc_multi <- autoclasscodes %>% 
+  rowwise() %>% 
+  mutate(num_codes = length(str_split(auto_classcodes, ":")[[1]])) %>%
+  group_by(num_codes) %>% 
+  summarize(count = sum(count)) %>%
+  mutate(num_codes = as.character(num_codes))
+  
+num_autoddc_docs <- sum(autocc_multi$count)
+
+autocc_multi_with_summary <- bind_rows(autocc_multi, data.frame(num_codes = "Records mit automatischer Klassifikation (base_dc:autoclasscode)", count = num_autoddc_docs))
+
+knitr::kable(autocc_multi_with_summary, col.names = c("Durch *baseclf* zugewiesene DDC-Klassen pro Record", "Anzahl Records"), format.args = list(big.mark = ".", decimal.mark=","))
+
+```
+
+### Verteilung der baseclf-Klassen (Abbildung 17)
+
+```{r, echo=FALSE}
+
+autoclasscodes_single_class_stats <- readr::read_csv("auto_classcodes_single_class_stats.csv")
+
+agg_autoclass_count <- autoclasscodes_single_class_stats %>%
+  rowwise() %>%
+  mutate(class = as.integer(auto_classcodes)) %>%
+  mutate(dewey_xx0 = as.character(class - class %% 10)) %>%
+  mutate(dewey_xx0 = if_else(nchar(dewey_xx0) == 1, paste0('00', dewey_xx0), if_else(nchar(dewey_xx0) == 2, paste0('0', dewey_xx0), dewey_xx0))) %>%
+  mutate(dewey_100 = as.character(class - class %% 100)) %>%
+  mutate(dewey_100 = if_else(dewey_100 == '0', '000', dewey_100)) %>%
+  mutate(dewey_10 = as.character(as.integer(dewey_xx0) - as.integer(dewey_100))) %>%
+  mutate(dewey_10 = if_else(dewey_10 == '0', '00', dewey_10)) %>%
+  left_join(de_ddc, by=join_by(dewey_100 == ddc_class)) %>%
+  mutate(full_name = paste(dewey_100, " ", classname))
+
+plot <- ggplot(data = agg_autoclass_count, aes(x = full_name, y = count, fill=factor(dewey_10))) +
+  geom_col(position = position_stack(reverse = TRUE)) + 
+  xlab('DDC-Hauptklasse') + 
+  ylab("Vorkommen der Klasse im Datenbestand (baseclf)") +
+  guides(fill = guide_legend(title = "Unterklasse\n (Zehnerstelle)")) +
+  coord_flip()
+ggsave(plot, path = "figure/", filename = "distribution_autoclass_over_all_records.png", width=9, height=5.0625, units="in", device = "png")
+
+```
+
+![](figure/distribution_autoclass_over_all_records.png)
+
+```{r, echo=FALSE}
+ 
+both_code_stats <- readr::read_csv("both_codes_stats.csv")
+
+both_classes <- both_code_stats %>%
+  rowwise() %>% 
+  mutate(str_codes = list(str_split(both_codes, "<->")[[1]])) %>%
+  mutate(autoclasscodes = str_split(str_codes[2], ":")) %>%
+  mutate(classcodes = str_split(str_codes[1], ":")) %>%
+  select(!str_codes) %>%
+  mutate(true_positives = length(intersect(autoclasscodes, classcodes))) %>%
+  mutate(false_positives = length(setdiff(autoclasscodes, classcodes))) %>%
+  mutate(false_negatives = length(setdiff(classcodes, autoclasscodes))) %>%
+  mutate(tp_wgt = true_positives * count) %>%
+  mutate(fp_wgt = false_positives * count) %>%
+  mutate(fn_wgt = false_negatives * count)
+  
+tp_sum = sum(both_classes$tp_wgt)
+fp_sum = sum(both_classes$fp_wgt)
+fn_sum = sum(both_classes$fn_wgt)
+  
+results_abs <- tibble(
+  title = c("Wahr Positiv", "Falsch Positiv", "Falsch Negativ"),
+  value = c(tp_sum, fp_sum, fn_sum)
+)
+
+results_pres_recall <- tibble(
+  title = c("Precision (Microavg)", "Recall (Microavg)", "F1 (Microavg)"),
+  value = c(
+    tp_sum / (tp_sum + fp_sum),
+    tp_sum / (tp_sum + fn_sum),
+    (2 * tp_sum) / (2 * tp_sum + fp_sum + fn_sum))
+)
+
+```
+
+### Klassifikationsergebnisse baseclf (Tabelle 17)
+
+```{r, echo=FALSE}
+knitr::kable(results_abs, col.names = c("Treffermenge", "Größe"), format.args = list(big.mark = ".", decimal.mark = ","))
+```
+
+### baseclf-Metriken (Tabelle 18)
+
+
+```{r, echo=FALSE}
+knitr::kable(results_pres_recall, col.names = c("Maß", "Wert"), format.args = list(big.mark = ".", decimal.mark = ","))
+```
+
+```{r, echo=FALSE}
+fp_class_list <- list()
+fn_class_list <- list()
+tp_class_list <- list()
+
+for (row in 1:nrow(both_classes)) {
+  false_positives = setdiff(both_classes[[row, "autoclasscodes"]][[1]], both_classes[[row, "classcodes"]][[1]])
+  false_negatives = setdiff(both_classes[[row, "classcodes"]][[1]], both_classes[[row, "autoclasscodes"]][[1]])
+  true_positives = intersect(both_classes[[row, "autoclasscodes"]][[1]], both_classes[[row, "classcodes"]][[1]])
+  if (length(false_positives) > 0) {
+    for (fp in false_positives) {
+      fp_class = as.character(fp)
+      if (fp_class %in% names(fp_class_list)) {
+        fp_class_list[fp_class] = fp_class_list[[fp_class]] + both_classes[[row, "count"]]
+      }
+      else {
+        fp_class_list[fp_class] = both_classes[[row, "count"]]
+      }
+    }
+  }
+  if (length(false_negatives) > 0) {
+    for (fn in false_negatives) {
+      fn_class = as.character(fn)
+      if (fn_class %in% names(fn_class_list)) {
+        fn_class_list[fn_class] = fn_class_list[[fn_class]] + both_classes[[row, "count"]]
+      }
+      else {
+        fn_class_list[fn_class] = both_classes[[row, "count"]]
+      }
+    }
+  }
+  if (length(true_positives) > 0) {
+    for (tp in true_positives) {
+      tp_class = as.character(tp)
+      if (tp_class %in% names(tp_class_list)) {
+        tp_class_list[tp_class] = tp_class_list[[tp_class]] + both_classes[[row, "count"]]
+      }
+      else {
+        tp_class_list[tp_class] = both_classes[[row, "count"]]
+      }
+    }
+  }
+  #print(both_classes[[row, "autoclasscodes"]])
+  #print(false_positives)
+}
+
+fp_classes_tibble <- as_tibble(fp_class_list) %>%
+  pivot_longer(cols = everything(), names_to = "class", values_to = "count")
+
+fn_classes_tibble <- as_tibble(fn_class_list) %>%
+  pivot_longer(cols = everything(), names_to = "class", values_to = "count")
+  
+tp_classes_tibble <- as_tibble(tp_class_list) %>%
+  pivot_longer(cols = everything(), names_to = "class", values_to = "count")
+  
+fp_100 <- fp_classes_tibble %>%
+  mutate(class = as.integer(class)) %>%
+  mutate(dewey_100 = as.character(class - class %% 100)) %>%
+  group_by(dewey_100) %>%
+  summarize(count = sum(count)) %>%
+  mutate(type = "False Positive")
+  
+fn_100 <- fn_classes_tibble %>%
+  mutate(class = as.integer(class)) %>%
+  mutate(dewey_100 = as.character(class - class %% 100)) %>%
+  group_by(dewey_100) %>%
+  summarize(count = sum(count)) %>%
+  mutate(type = "False Negative")
+  
+tp_100 <- tp_classes_tibble %>%
+  mutate(class = as.integer(class)) %>%
+  mutate(dewey_100 = as.character(class - class %% 100)) %>%
+  group_by(dewey_100) %>%
+  summarize(count = sum(count)) %>%
+  mutate(type = "True Positive")
+  
+fnfptp_stats <- rbind(fn_100, fp_100, tp_100) %>%
+  mutate(dewey_100 = if_else(dewey_100 == '0', '000', dewey_100))
+
+baseclf_stats <- fnfptp_stats %>%
+  rowwise() %>%
+  left_join(de_ddc, by=join_by(dewey_100 == ddc_class)) %>%
+  mutate(full_name = paste(dewey_100, " ", classname))
+
+plot <- ggplot(data = baseclf_stats, aes(x = full_name, y = count, fill=factor(type))) +
+  geom_col(position = position_stack(reverse = TRUE)) + 
+  xlab('DDC-Hauptklasse') + 
+  ylab("baseclf-Ergebnisse") +
+  guides(fill = guide_legend(title = "Treffermenge")) +
+  scale_fill_manual(
+    values = c("mediumpurple1", "red", "limegreen"),
+    labels = c("Falsch Negativ", "Falsch Positiv", "Wahr Positiv")
+  ) +
+  coord_flip()
+ggsave(plot, path = "figure/", filename = "baseclf_results_dewey_100.png", width=9, height=5.0625, units="in", device = "png")
+#Reduce('+', fp_class_list)
+
+```
+
+### Aggregierte Treffermengen/Kategorien (Abbildung 18)
+
+![](figure/baseclf_results_dewey_100.png)
+

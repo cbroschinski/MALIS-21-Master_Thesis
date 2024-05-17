@@ -1,0 +1,2 @@
+polyglot @ git+https://github.com/aboSamoor/polyglot.git@9b93b2ecbb9ba1f638c56b92665336e93230646a
+requests>=2.31.0

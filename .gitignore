@@ -1,0 +1,12 @@
+data/reducedListRecords/
+data/corpus/
+data/prepared_corpora
+data/stats/
+
+code/__pycache__
+
+analyze/*_stats.*
+analyze/README.md
+analyze/figure/*.png
+
+annif/data
